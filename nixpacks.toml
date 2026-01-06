@@ -1,9 +1,8 @@
 [phases.setup]
-nixPkgs = ["python312", "ffmpeg"]
+nixPkgs = ["python312", "python312Packages.pip", "ffmpeg"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["python -m pip install -r requirements.txt"]
 
 [start]
-# python -m streamlit 형식이 가장 확실하게 실행됩니다.
 cmd = "python -m streamlit run app.py --server.port $PORT --server.address 0.0.0.0"
