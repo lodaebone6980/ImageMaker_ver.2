@@ -1568,20 +1568,20 @@ if start_btn:
             for future in as_completed(future_to_meta):
                 s_num, fname, orig_text, p_text = future_to_meta[future]
                 path = future.result()
-                
-                # [핵심] 실패(None)하더라도 결과 리스트에는 넣어서 순서가 밀리지 않게 함 (원한다면 에러 이미지 처리 가능)
-                if path:
-                    results.append({
-                        "scene": s_num,
-                        "path": path,
-                        "filename": fname,
-                        "script": orig_text,
-                        "prompt": p_text,
-                        "audio_path": None,
-                        "video_path": None 
-                    })
-                else:
-                    # 실패 시 로그만 남기고 넘어가거나, 더미 데이터를 넣을 수도 있음
+
+                # [수정] 실패(None)해도 결과 리스트에 추가 - 빈 칸으로 표시하고 재생성 가능하게
+                results.append({
+                    "scene": s_num,
+                    "path": path,  # 실패 시 None
+                    "filename": fname,
+                    "script": orig_text,
+                    "prompt": p_text,
+                    "audio_path": None,
+                    "video_path": None,
+                    "failed": path is None  # 실패 여부 표시
+                })
+
+                if not path:
                     st.error(f"Scene {s_num} 이미지 생성 최종 실패.")
 
                 completed_cnt += 1
@@ -1624,14 +1624,30 @@ if st.session_state['generated_results']:
     # 2. 개별 리스트 및 [재생성] 기능
     # ------------------------------------------------
     for index, item in enumerate(st.session_state['generated_results']):
+        is_failed = item.get('failed', False) or item.get('path') is None
+
         with st.container(border=True):
             cols = st.columns([1, 2])
-            
+
             # [왼쪽] 이미지 및 재생성 버튼
             with cols[0]:
-                try: st.image(item['path'], use_container_width=True)
-                except: st.error("이미지 없음")
-                
+                if is_failed:
+                    # 실패한 씬: 빈 칸 + 경고 표시
+                    st.markdown("""
+                    <div style="background-color: #ffebee; border: 2px dashed #f44336; border-radius: 10px;
+                                padding: 40px; text-align: center; min-height: 200px; display: flex;
+                                flex-direction: column; justify-content: center; align-items: center;">
+                        <span style="font-size: 48px;">⚠️</span>
+                        <p style="color: #c62828; font-weight: bold; margin-top: 10px;">이미지 생성 실패</p>
+                        <p style="color: #666; font-size: 12px;">민감한 콘텐츠로 인해<br>생성이 거부되었습니다</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    try:
+                        st.image(item['path'], use_container_width=True)
+                    except:
+                        st.error("이미지 파일 로드 실패")
+
                 # [NEW] 이미지 개별 재생성 버튼
                 if st.button(f"🔄 이 장면만 이미지 다시 생성", key=f"regen_img_{index}", use_container_width=True):
                     if not api_key:
@@ -1639,26 +1655,24 @@ if st.session_state['generated_results']:
                     else:
                         with st.spinner(f"Scene {item['scene']} 다시 그리는 중..."):
                             client = genai.Client(api_key=api_key)
-                            
+
                             # 1. 프롬프트 다시 생성 (현재 대본과 스타일 반영)
                             current_title = st.session_state.get('video_title', '')
-                            # 대본이 수정되었을 수도 있으므로 item['script'] 사용
                             _, new_prompt = generate_prompt(
                                 api_key, index, item['script'], style_instruction,
                                 current_title, target_language
                             )
-                            
+
                             # 2. 이미지 생성
                             new_path = generate_image(
-                                client, new_prompt, item['filename'], 
+                                client, new_prompt, item['filename'],
                                 IMAGE_OUTPUT_DIR, SELECTED_IMAGE_MODEL
                             )
-                            
+
                             if new_path:
-                                # 3. 결과 업데이트
                                 st.session_state['generated_results'][index]['path'] = new_path
                                 st.session_state['generated_results'][index]['prompt'] = new_prompt
-                                # 이미지가 바뀌었으므로 기존 비디오는 무효화
+                                st.session_state['generated_results'][index]['failed'] = False
                                 st.session_state['generated_results'][index]['video_path'] = None
                                 st.success("이미지가 변경되었습니다!")
                                 time.sleep(0.5)
@@ -1666,15 +1680,78 @@ if st.session_state['generated_results']:
                             else:
                                 st.error("이미지 생성에 실패했습니다.")
 
+                # [NEW] 민감하지 않게 재차 생성 버튼 (실패한 씬에만 표시)
+                if is_failed:
+                    if st.button(f"🛡️ 민감하지 않게 재생성", key=f"safe_regen_{index}", use_container_width=True, type="primary"):
+                        if not api_key:
+                            st.error("API Key가 필요합니다.")
+                        else:
+                            with st.spinner(f"Scene {item['scene']} 순화된 프롬프트로 재생성 중..."):
+                                client = genai.Client(api_key=api_key)
+
+                                # [핵심] 민감한 키워드를 순화하는 프롬프트 생성
+                                sanitize_prompt = f"""
+[Role] Content Safety Editor
+
+[Task]
+Rewrite the following script to be completely safe for image generation.
+Remove or replace any sensitive content:
+- Political figures → "a leader" or "a person"
+- Violence/arrest/death → peaceful alternatives
+- Specific dates/events → general descriptions
+- Military/weapons → remove entirely
+
+[Original Script]
+{item['script']}
+
+[Output]
+Return ONLY the sanitized Korean script. Keep the core meaning but make it safe.
+"""
+                                try:
+                                    # 1. 대본 순화
+                                    sanitize_response = client.models.generate_content(
+                                        model=GEMINI_TEXT_MODEL_NAME,
+                                        contents=sanitize_prompt
+                                    )
+                                    safe_script = sanitize_response.text.strip()
+
+                                    # 2. 순화된 대본으로 프롬프트 생성
+                                    current_title = st.session_state.get('video_title', '')
+                                    _, new_prompt = generate_prompt(
+                                        api_key, index, safe_script, style_instruction,
+                                        current_title, target_language
+                                    )
+
+                                    # 3. 이미지 생성
+                                    new_path = generate_image(
+                                        client, new_prompt, item['filename'],
+                                        IMAGE_OUTPUT_DIR, SELECTED_IMAGE_MODEL
+                                    )
+
+                                    if new_path:
+                                        st.session_state['generated_results'][index]['path'] = new_path
+                                        st.session_state['generated_results'][index]['prompt'] = new_prompt
+                                        st.session_state['generated_results'][index]['failed'] = False
+                                        st.session_state['generated_results'][index]['video_path'] = None
+                                        st.success(f"✅ 순화된 프롬프트로 생성 성공!")
+                                        time.sleep(0.5)
+                                        st.rerun()
+                                    else:
+                                        st.error("순화된 프롬프트로도 생성 실패. 대본을 더 수정해주세요.")
+                                except Exception as e:
+                                    st.error(f"오류 발생: {e}")
+
             # [오른쪽] 정보
             with cols[1]:
-                st.subheader(f"Scene {item['scene']:02d}")
+                st.subheader(f"Scene {item['scene']:02d}" + (" ⚠️ 실패" if is_failed else ""))
                 st.caption(f"파일명: {item['filename']}")
                 st.write(f"**대본:** {item['script']}")
 
                 with st.expander("프롬프트 확인"):
                     st.text(item['prompt'])
-                try:
-                    with open(item['path'], "rb") as file:
-                        st.download_button("⬇️ 이미지 저장", data=file, file_name=item['filename'], mime="image/png", key=f"btn_down_{item['scene']}")
-                except: pass
+
+                if not is_failed:
+                    try:
+                        with open(item['path'], "rb") as file:
+                            st.download_button("⬇️ 이미지 저장", data=file, file_name=item['filename'], mime="image/png", key=f"btn_down_{item['scene']}")
+                    except: pass
