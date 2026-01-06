@@ -1,5 +1,6 @@
 [phases.setup]
-nixPkgs = ["python", "ffmpeg"]
+# python 대신 python312를 명시하여 3.12 버전을 사용하도록 강제합니다.
+nixPkgs = ["python312", "ffmpeg"]
 
 [start]
 cmd = "streamlit run app.py --server.port $PORT --server.address 0.0.0.0"
