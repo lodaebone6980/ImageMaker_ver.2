@@ -26,11 +26,17 @@ def get_api_key_safe(key_name):
         return val
     # 2. 로컬 테스트용 secrets 확인 (에러 방지)
     try:
-        if key_name in st.secrets:
-            return st.secrets[key_name]
+        if "general" in st.secrets and key_name in st.secrets["general"]:
+            return st.secrets["general"][key_name]
     except:
         pass
     return None
+
+# [안정화] 이미지 생성 세마포어 래퍼 (동시 작업 제한)
+def safe_generate_image(*args, **kwargs):
+    """세마포어로 동시 이미지 생성 수를 제한하여 서버 다운 방지"""
+    with render_semaphore:
+        return generate_image(*args, **kwargs)
 
 # [NEW] 오디오 처리를 위한 라이브러리 추가
 from pydub import AudioSegment
@@ -1532,7 +1538,7 @@ if start_btn:
                     status_box.write(f"⏳ API 제한 보호: {request_count}개 완료, 60초 대기 중...")
                     time.sleep(60)
 
-                future = executor.submit(generate_image, current_client, prompt_text, fname, IMAGE_OUTPUT_DIR, SELECTED_IMAGE_MODEL)
+                future = executor.submit(safe_generate_image, current_client, prompt_text, fname, IMAGE_OUTPUT_DIR, SELECTED_IMAGE_MODEL)
                 future_to_meta[future] = (s_num, fname, orig_text, prompt_text)
                 request_count += 1
             
