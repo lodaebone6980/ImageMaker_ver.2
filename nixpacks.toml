@@ -1,5 +1,6 @@
 [phases.setup]
-nixPkgs = ["python", "ffmpeg"]
+# python 대신 python312를 명시하여 3.12 버전으로 강제 지정
+nixPkgs = ["python312", "ffmpeg"]
 
 [phases.install]
 cmds = ["pip install -r requirements.txt"]

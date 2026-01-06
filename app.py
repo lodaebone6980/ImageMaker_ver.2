@@ -1,3 +1,11 @@
+# [Python 3.13 호환] audioop 모듈 대체 (Python 3.13에서 삭제됨)
+try:
+    import audioop
+except ImportError:
+    import audioop_lts as audioop
+    import sys
+    sys.modules["audioop"] = audioop
+
 import streamlit as st
 import requests
 import json
