@@ -5,4 +5,3 @@ pydub
 moviepy
 numpy
 Pillow
-audioop-lts
