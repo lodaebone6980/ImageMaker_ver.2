@@ -17,13 +17,19 @@ from google.genai import types
 # 4GB RAM 기준, 동시에 2개 이상의 렌더링이 돌아가면 서버가 터질 수 있습니다.
 render_semaphore = threading.BoundedSemaphore(2)
 
-# [안정화] Railway 환경 변수 로드 함수 (Secrets 에러 해결)
+# [안정화] Railway 환경변수 + 로컬 secrets 안전 로드 함수
 def get_api_key_safe(key_name):
-    """Railway [Variables] 탭에 등록한 값을 먼저 가져옴"""
+    """Railway Variables에 등록된 값 확인 후, 없으면 로컬 secrets 확인"""
+    # 1. Railway Variables에 등록된 값 확인
     val = os.getenv(key_name)
     if val:
         return val
-    # 만약 환경변수에 없으면 None 반환 (사용자에게 직접 입력을 받음)
+    # 2. 로컬 테스트용 secrets 확인 (에러 방지)
+    try:
+        if key_name in st.secrets:
+            return st.secrets[key_name]
+    except:
+        pass
     return None
 
 # [NEW] 오디오 처리를 위한 라이브러리 추가
