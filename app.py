@@ -6,11 +6,25 @@ import os
 import re
 import shutil
 import zipfile
+import threading
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 from google import genai
 from google.genai import types
+
+# [안정화] 영상 합치기 동시 작업 제한 (서버 다운 방지)
+# 4GB RAM 기준, 동시에 2개 이상의 렌더링이 돌아가면 서버가 터질 수 있습니다.
+render_semaphore = threading.BoundedSemaphore(2)
+
+# [안정화] Railway 환경 변수 로드 함수 (Secrets 에러 해결)
+def get_api_key_safe(key_name):
+    """Railway [Variables] 탭에 등록한 값을 먼저 가져옴"""
+    val = os.getenv(key_name)
+    if val:
+        return val
+    # 만약 환경변수에 없으면 None 반환 (사용자에게 직접 입력을 받음)
+    return None
 
 # [NEW] 오디오 처리를 위한 라이브러리 추가
 from pydub import AudioSegment
@@ -862,6 +876,12 @@ def merge_all_videos(video_paths, output_dir):
     except Exception as e:
         return f"Merge Error: {e}"
 
+# [안정화] 동시 렌더링 제한 래퍼 함수
+def merge_all_videos_safe(video_paths, output_dir):
+    """세마포어로 동시 작업 수를 제한하여 서버 다운 방지"""
+    with render_semaphore:  # 자리가 날 때까지 대기 후 실행
+        return merge_all_videos(video_paths, output_dir)
+
 # ==========================================
 # [UI] 사이드바 (자동 로그인 + 장르 선택 적용)
 # ==========================================
@@ -871,10 +891,10 @@ with st.sidebar:
     # 1. Google API Key 설정 (멀티 API 지원)
     st.subheader("🔑 API 키 설정")
 
-    # API 키 개수 선택 드롭박스
+    # API 키 개수를 유동적으로 설정
     num_api_keys = st.selectbox(
-        "API 키 개수",
-        options=[1, 2, 3, 4],
+        "사용할 API 키 개수",
+        options=[1, 2, 3, 4, 5, 10],
         index=0,
         help="여러 API 키를 사용하면 병렬 처리로 더 빠르게 생성할 수 있습니다. (키당 분당 20개)"
     )
@@ -882,23 +902,25 @@ with st.sidebar:
     # API 키 입력 필드들
     api_keys = []
 
-    # secrets.toml에서 자동 로드 시도
+    # Railway 환경변수에서 자동 로드 시도 (st.secrets 대신 os.getenv 사용)
     for i in range(num_api_keys):
-        secret_key = f"google_api_key_{i+1}" if i > 0 else "google_api_key"
+        # 환경변수 이름 규칙: google_api_key, google_api_key_2, google_api_key_3...
+        env_name = "google_api_key" if i == 0 else f"google_api_key_{i+1}"
+        saved_key = get_api_key_safe(env_name)
 
-        if "general" in st.secrets and secret_key in st.secrets["general"]:
-            key = st.secrets["general"][secret_key]
-            st.success(f"🔑 API Key {i+1} 로드됨")
-            api_keys.append(key)
+        if saved_key:
+            st.success(f"✅ API Key {i+1} 로드됨")
+            api_keys.append(saved_key)
         else:
-            key = st.text_input(
-                f"🔑 Google API Key {i+1}" if num_api_keys > 1 else "🔑 Google API Key",
+            # 환경변수에 등록 안 된 경우에만 입력창 표시
+            input_key = st.text_input(
+                f"🔑 Key {i+1} 직접 입력",
                 type="password",
-                key=f"api_key_{i}",
+                key=f"manual_key_{i}",
                 help=f"API 키 {i+1}번을 입력하세요."
             )
-            if key:
-                api_keys.append(key)
+            if input_key:
+                api_keys.append(input_key)
 
     # 호환성을 위해 첫 번째 키를 api_key로도 저장
     api_key = api_keys[0] if api_keys else ""
