@@ -2,6 +2,8 @@ streamlit
 google-genai
 requests
 pydub
-moviepy
-numpy
+moviepy==1.0.3
+numpy<2.0.0
 Pillow
+decorator<5.0.0
+imageio-ffmpeg
