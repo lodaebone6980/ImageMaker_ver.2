@@ -357,7 +357,20 @@ Return ONLY a raw JSON list of strings.
         )
         scenes = json.loads(response.text)
         if isinstance(scenes, list):
-            return [s.strip() for s in scenes if s.strip()]
+            filtered = [s.strip() for s in scenes if s.strip()]
+
+            # [검증] 씬 개수가 예상 범위인지 확인
+            total_chars = len(full_text)
+            expected_scenes = total_chars // 185  # 평균 185자 기준
+            min_expected = max(40, int(expected_scenes * 0.85))  # -15%
+            max_expected = int(expected_scenes * 1.15)  # +15%
+
+            if min_expected <= len(filtered) <= max_expected:
+                return filtered
+            else:
+                # AI 결과가 예상 범위를 벗어나면 규칙 기반 폴백
+                print(f"AI 분할 결과({len(filtered)}개)가 예상 범위({min_expected}~{max_expected})를 벗어남. 폴백 사용.")
+                return split_script_by_time(full_text, min_chars=170, max_chars=240)
         else:
             return split_script_by_time(full_text, min_chars=170, max_chars=240)
     except Exception as e:
