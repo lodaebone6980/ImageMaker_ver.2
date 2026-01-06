@@ -1,9 +1,9 @@
 [phases.setup]
-# python 대신 python312를 명시하여 3.12 버전으로 강제 지정
 nixPkgs = ["python312", "ffmpeg"]
 
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
 
 [start]
-cmd = "streamlit run app.py --server.port $PORT --server.address 0.0.0.0"
+# python -m streamlit 형식이 가장 확실하게 실행됩니다.
+cmd = "python -m streamlit run app.py --server.port $PORT --server.address 0.0.0.0"
