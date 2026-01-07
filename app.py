@@ -642,6 +642,12 @@ def generate_image(client, prompt, filename, output_dir, selected_model_name):
 
             # [핵심 수정] 429 (Too Many Requests) 또는 429 Resource Exhausted 에러 발생 시
             if "429" in error_msg or "ResourceExhausted" in error_msg:
+                # [NEW] 일일 할당량(RPD) 소진 감지 - 재시도 불가
+                if "generate_requests_per_model_per_day" in error_msg or "daily" in error_msg.lower():
+                    print(f"🚨 [일일 할당량 소진] {filename} - 오늘의 API 사용량이 모두 소진되었습니다.")
+                    # 특별한 에러 반환 (None 대신 문자열로 구분)
+                    return "DAILY_LIMIT_EXHAUSTED"
+
                 wait_time = 30  # 30초 동안 멈췄다가 다시 시도 (분당 제한 초기화 대기)
                 print(f"🛑 [API 제한 감지] {filename} - {wait_time}초 대기 후 재시도합니다...")
                 time.sleep(wait_time)
@@ -1560,11 +1566,15 @@ if start_btn:
                 # [RPM 기반 속도 조절] API 키 개수에 맞춰 대기
                 time.sleep(sleep_interval)
 
-                # [분당 제한] 총 요청이 RPM * API키 개수를 초과하면 1분 대기
+                # [분당 제한] 총 요청이 RPM * API키 개수를 초과하면 1분 + 여유시간 대기
+                # 실제 API 처리 시간 고려하여 65~70초 대기 (5~10초 버퍼)
                 requests_per_minute = RPM_LIMIT * num_clients
                 if request_count > 0 and request_count % requests_per_minute == 0:
-                    status_box.write(f"⏳ RPM 제한 도달: {request_count}개 완료, 60초 대기 중...")
-                    time.sleep(60)
+                    import random
+                    buffer_time = random.randint(5, 10)  # 5~10초 랜덤 버퍼
+                    wait_time = 60 + buffer_time
+                    status_box.write(f"⏳ RPM 제한 도달: {request_count}개 완료, {wait_time}초 대기 중...")
+                    time.sleep(wait_time)
 
                 future = executor.submit(safe_generate_image, current_client, prompt_text, fname, IMAGE_OUTPUT_DIR, SELECTED_IMAGE_MODEL)
                 future_to_meta[future] = (s_num, fname, orig_text, prompt_text)
@@ -1572,9 +1582,16 @@ if start_btn:
             
             # 결과 수집
             completed_cnt = 0
+            daily_limit_exhausted = False  # 일일 할당량 소진 플래그
+
             for future in as_completed(future_to_meta):
                 s_num, fname, orig_text, p_text = future_to_meta[future]
                 path = future.result()
+
+                # [NEW] 일일 할당량 소진 감지
+                if path == "DAILY_LIMIT_EXHAUSTED":
+                    daily_limit_exhausted = True
+                    path = None  # 실패로 처리
 
                 # [수정] 실패(None)해도 결과 리스트에 추가 - 빈 칸으로 표시하고 재생성 가능하게
                 results.append({
@@ -1585,10 +1602,13 @@ if start_btn:
                     "prompt": p_text,
                     "audio_path": None,
                     "video_path": None,
-                    "failed": path is None  # 실패 여부 표시
+                    "failed": path is None,  # 실패 여부 표시
+                    "daily_limit": daily_limit_exhausted  # 일일 할당량 소진 여부
                 })
 
-                if not path:
+                if daily_limit_exhausted:
+                    st.error(f"🚨 Scene {s_num}: 일일 API 할당량이 소진되었습니다. 내일 다시 시도해주세요.")
+                elif not path:
                     st.error(f"Scene {s_num} 이미지 생성 최종 실패.")
 
                 completed_cnt += 1
@@ -1687,9 +1707,9 @@ if st.session_state['generated_results']:
                             else:
                                 st.error("이미지 생성에 실패했습니다.")
 
-                # [NEW] 민감하지 않게 재차 생성 버튼 (실패한 씬에만 표시)
+                # [NEW] 이미지 우회 재생산 버튼 (실패한 씬에만 표시)
                 if is_failed:
-                    if st.button(f"🛡️ 민감하지 않게 재생성", key=f"safe_regen_{index}", use_container_width=True, type="primary"):
+                    if st.button(f"🛡️ 이미지 우회 재생산", key=f"safe_regen_{index}", use_container_width=True, type="primary"):
                         if not api_key:
                             st.error("API Key가 필요합니다.")
                         else:
