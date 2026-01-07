@@ -322,62 +322,13 @@ def parse_numbered_script(script):
 # ==========================================
 def split_text_automatically(client, full_text):
     """
-    본문 전용 분할:
+    본문 전용 분할 - 규칙 기반 (AI 호출 없이 빠르게 처리)
     - 1만자 기준 50~55개 씬 타겟 (평균 30초/185자)
     - 최소 170자(28초) 확보 전 분할 엄격 금지
     - 최대 240자(40초) 이전에 반드시 분할
     """
-    prompt = f"""
-[Role] Video Storyboard Director
-
-[Task]
-Split the [Main Script] into 50 to 55 scenes for a 10,000-character script.
-(Adjust proportionally if the length differs.)
-
-[Strict Rules]
-1. **Minimum Length:** DO NOT split if the current segment is under **170 characters**.
-   - Even if the topic changes slightly, keep merging sentences until you reach this limit.
-2. **Target Length:** Aim for **180 - 220 characters** per scene.
-3. **Maximum Limit:** You must split before reaching **240 characters**.
-4. **Meaning:** Split at the end of a sentence only after the minimum length is met.
-5. **Scene Density:** For 10,000 chars, the result must be around 50-55 scenes.
-
-[Main Script]
-{full_text}
-
-[Output]
-Return ONLY a raw JSON list of strings.
-"""
-
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_TEXT_MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
-        )
-        scenes = json.loads(response.text)
-        if isinstance(scenes, list):
-            filtered = [s.strip() for s in scenes if s.strip()]
-
-            # [검증] 씬 개수가 예상 범위인지 확인
-            total_chars = len(full_text)
-            expected_scenes = total_chars // 185  # 평균 185자 기준
-            min_expected = max(40, int(expected_scenes * 0.85))  # -15%
-            max_expected = int(expected_scenes * 1.15)  # +15%
-
-            if min_expected <= len(filtered) <= max_expected:
-                return filtered
-            else:
-                # AI 결과가 예상 범위를 벗어나면 규칙 기반 폴백
-                print(f"AI 분할 결과({len(filtered)}개)가 예상 범위({min_expected}~{max_expected})를 벗어남. 폴백 사용.")
-                return split_script_by_time(full_text, min_chars=170, max_chars=240)
-        else:
-            return split_script_by_time(full_text, min_chars=170, max_chars=240)
-    except Exception as e:
-        print(f"AI Split Error: {e}")
-        return split_script_by_time(full_text, min_chars=170, max_chars=240)
+    # [최적화] AI 호출 없이 바로 규칙 기반 분할 사용 (5-10초 절약)
+    return split_script_by_time(full_text, min_chars=170, max_chars=240)
 
 
 # [UPGRADE] 규칙 기반 분할 함수 (170~240자 범위, 28~40초)
