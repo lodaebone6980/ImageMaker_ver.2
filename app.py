@@ -589,11 +589,20 @@ def generate_image(client, prompt, filename, output_dir, selected_model_name):
                 wait_time = (5 * attempt) + random.uniform(1, 3)
                 print(f"🛑 [API 제한] {filename} - {wait_time:.1f}초 대기 후 재시도... (시도 {attempt})")
                 time.sleep(wait_time)
+            elif "503" in error_msg or "UNAVAILABLE" in error_msg:
+                # 503 에러(모델 과부하) - 점진적 대기 후 재시도
+                wait_time = (10 * attempt) + random.uniform(2, 5)
+                print(f"⚠️ [모델 과부하] {filename} - {wait_time:.1f}초 대기 후 재시도... (시도 {attempt}/{max_retries})")
+                if attempt >= 3:
+                    # 3번 이상 503이면 스킵 (무한 대기 방지)
+                    print(f"🚫 [스킵] {filename} - 모델 과부하 지속. 이 이미지 건너뜀.")
+                    return None
+                time.sleep(wait_time)
             elif "400" in error_msg or "InvalidArgument" in error_msg or "SAFETY" in error_msg.upper():
                 print(f"🚫 [컨텐츠 거부] {filename} - 프롬프트가 거부됨.")
                 return None  # 바로 실패 처리 (재시도 무의미)
             else:
-                print(f"⚠️ [에러] {error_msg} ({filename}) - 3초 대기")
+                print(f"⚠️ [에러] {error_msg} ({filename}) - 3초 대기 (시도 {attempt}/{max_retries})")
                 time.sleep(3)
 
     # [최종 실패]
@@ -1449,7 +1458,13 @@ if start_btn:
 
             for future in as_completed(future_to_meta):
                 s_num, fname, orig_text, p_text = future_to_meta[future]
-                path = future.result()
+
+                # [NEW] 타임아웃 추가 - 개별 이미지 최대 90초
+                try:
+                    path = future.result(timeout=90)
+                except Exception as timeout_err:
+                    print(f"⏱️ [타임아웃] {fname} - 90초 초과. 건너뜀.")
+                    path = None
 
                 # [NEW] 일일 할당량 소진 감지
                 if path == "DAILY_LIMIT_EXHAUSTED":
@@ -1472,7 +1487,7 @@ if start_btn:
                 if daily_limit_exhausted:
                     st.error(f"🚨 Scene {s_num}: 일일 API 할당량이 소진되었습니다. 내일 다시 시도해주세요.")
                 elif not path:
-                    st.error(f"Scene {s_num} 이미지 생성 최종 실패.")
+                    st.error(f"Scene {s_num} 이미지 생성 실패.")
 
                 completed_cnt += 1
                 progress_bar.progress(0.5 + (completed_cnt / total_scenes * 0.5))
