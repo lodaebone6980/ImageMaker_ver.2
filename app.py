@@ -579,14 +579,15 @@ def generate_prompt(api_key, index, text_chunk, style_instruction, video_title, 
         return (scene_num, f"Error: {e}")
 
 # ==========================================
-# [수정됨] generate_image: API 제한(429) 완벽 대응 + 점진적 재시도
+# [수정됨] generate_image: 콘텐츠 필터링 빠른 감지 + 점진적 재시도
 # ==========================================
 def generate_image(client, prompt, filename, output_dir, selected_model_name):
     import random
     full_path = os.path.join(output_dir, filename)
 
-    # 재시도 설정 (최대 5회, 대기 시간 점증)
+    # 재시도 설정 (최대 5회)
     max_retries = 5
+    no_data_count = 0  # 이미지 데이터 없음 연속 카운트
 
     # 안전 필터 설정
     safety_settings = [
@@ -627,34 +628,39 @@ def generate_image(client, prompt, filename, output_dir, selected_model_name):
                         image.save(full_path)
                         return full_path
 
-            # 응답은 왔으나 이미지가 없는 경우 (필터링 등)
-            print(f"⚠️ [시도 {attempt}/{max_retries}] 이미지 데이터 없음. 재시도... ({filename})")
-            time.sleep(2)
+            # 응답은 왔으나 이미지가 없는 경우 (콘텐츠 필터링)
+            no_data_count += 1
+            print(f"⚠️ [시도 {attempt}/{max_retries}] 이미지 데이터 없음 ({no_data_count}회 연속) ({filename})")
+
+            # [최적화] 2번 연속 이미지 없으면 콘텐츠 필터링으로 판단 → 바로 실패 처리
+            if no_data_count >= 2:
+                print(f"🚫 [콘텐츠 필터링] {filename} - 민감한 콘텐츠로 판단됨. 재시도 중단.")
+                return None
+
+            time.sleep(1)  # 짧게 대기
 
         except Exception as e:
             error_msg = str(e)
+            no_data_count = 0  # 에러는 다른 원인이므로 카운트 리셋
 
-            # [핵심 수정] 429 에러(속도 제한) 발생 시 점진적 대기 (Jitter 포함)
+            # 429 에러(속도 제한) 발생 시 점진적 대기
             if "429" in error_msg or "ResourceExhausted" in error_msg:
-                # [NEW] 일일 할당량(RPD) 소진 감지 - 재시도 불가
+                # 일일 할당량(RPD) 소진 감지 - 재시도 불가
                 if "generate_requests_per_model_per_day" in error_msg or "daily" in error_msg.lower():
                     print(f"🚨 [일일 할당량 소진] {filename} - 오늘의 API 사용량이 모두 소진되었습니다.")
                     return "DAILY_LIMIT_EXHAUSTED"
 
-                # 시도 횟수가 늘어날수록 대기 시간 증가 (예: 5초 -> 10초 -> 15초...)
-                # 랜덤 시간을 섞어 스레드들이 동시에 재시도하는 것 방지 (Jitter)
+                # 점진적 대기 (Jitter 포함)
                 wait_time = (5 * attempt) + random.uniform(1, 3)
                 print(f"🛑 [API 제한] {filename} - {wait_time:.1f}초 대기 후 재시도... (시도 {attempt})")
                 time.sleep(wait_time)
             elif "400" in error_msg or "InvalidArgument" in error_msg or "SAFETY" in error_msg.upper():
-                # 400 에러 또는 안전 필터
-                print(f"🚫 [컨텐츠 거부] {filename} - 프롬프트가 거부됨. 5초 대기 후 재시도...")
-                time.sleep(5)
+                print(f"🚫 [컨텐츠 거부] {filename} - 프롬프트가 거부됨.")
+                return None  # 바로 실패 처리 (재시도 무의미)
             else:
-                # 일반 에러는 짧게 대기
-                print(f"⚠️ [에러] {error_msg} ({filename}) - 5초 대기")
-                time.sleep(5)
-            
+                print(f"⚠️ [에러] {error_msg} ({filename}) - 3초 대기")
+                time.sleep(3)
+
     # [최종 실패]
     print(f"❌ [최종 실패] {filename} - 모든 재시도 실패.")
     return None
