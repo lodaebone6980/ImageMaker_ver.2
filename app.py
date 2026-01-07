@@ -21,9 +21,11 @@ from PIL import Image
 from google import genai
 from google.genai import types
 
-# [안정화] 영상 합치기 동시 작업 제한 (서버 다운 방지)
-# 4GB RAM 기준, 동시에 2개 이상의 렌더링이 돌아가면 서버가 터질 수 있습니다.
-render_semaphore = threading.BoundedSemaphore(2)
+# [안정화] 동시 작업 제한 (서버 다운 방지)
+# 이미지 생성: 5개까지 동시 허용 (API 호출은 가벼움)
+# 영상 병합: 별도 세마포어로 2개 제한 (메모리 많이 사용)
+render_semaphore = threading.BoundedSemaphore(5)  # 이미지 생성용
+video_merge_semaphore = threading.BoundedSemaphore(2)  # 영상 병합용
 
 # [안정화] Railway 환경변수 + 로컬 secrets 안전 로드 함수
 def get_api_key_safe(key_name):
@@ -912,7 +914,7 @@ def merge_all_videos(video_paths, output_dir):
 # [안정화] 동시 렌더링 제한 래퍼 함수
 def merge_all_videos_safe(video_paths, output_dir):
     """세마포어로 동시 작업 수를 제한하여 서버 다운 방지"""
-    with render_semaphore:  # 자리가 날 때까지 대기 후 실행
+    with video_merge_semaphore:  # 영상 병합용 세마포어 (메모리 집약적)
         return merge_all_videos(video_paths, output_dir)
 
 # ==========================================
@@ -1531,13 +1533,17 @@ if start_btn:
 
         results = []
 
-        # [멀티 API] API 키 개수에 따라 worker 수와 대기 시간 조절 (안정성 강화)
-        # 키 1개: 4초 간격 (분당 15개, 안전 마진)
-        # 키 2개: 3초 간격 (분당 20개 x 2 = 40개 가능하지만 안전하게)
-        # 키 3개: 2초 간격
-        # 키 4개: 1.5초 간격
-        sleep_interval = max(4.0 / num_clients, 1.5)  # 최소 1.5초 보장
-        adjusted_workers = min(max_workers, num_clients * 3)  # API 키당 3개 worker로 축소
+        # [RPM 기반 최적화] gemini-3-pro-image RPM = 20 (분당 20개)
+        # API 키당 3초 간격으로 요청해야 RPM 초과 방지
+        RPM_LIMIT = 20  # 분당 요청 제한
+        sleep_interval = 60.0 / RPM_LIMIT / num_clients  # API 키 개수로 나눔
+        # 최소 0.5초, 최대 3.5초 보장 (너무 빠르거나 느리지 않게)
+        sleep_interval = max(0.5, min(sleep_interval, 3.5))
+
+        # Worker 수: RPM에 맞춰 조절 (동시에 너무 많이 실행되지 않게)
+        adjusted_workers = min(max_workers, num_clients * 5)  # API 키당 5개 worker
+
+        status_box.write(f"⏱️ RPM 설정: {RPM_LIMIT}/분, 요청 간격: {sleep_interval:.1f}초, Worker: {adjusted_workers}개")
 
         with ThreadPoolExecutor(max_workers=adjusted_workers) as executor:
             future_to_meta = {}
@@ -1551,12 +1557,13 @@ if start_btn:
                 # [라운드 로빈] 클라이언트 순환 배정
                 current_client = clients[request_count % num_clients]
 
-                # [속도 조절] API 키 개수에 맞춰 대기
+                # [RPM 기반 속도 조절] API 키 개수에 맞춰 대기
                 time.sleep(sleep_interval)
 
-                # [80개 제한] 멀티 API 사용 시 80개마다 1분 대기
-                if num_clients > 1 and request_count > 0 and request_count % total_rate_limit == 0:
-                    status_box.write(f"⏳ API 제한 보호: {request_count}개 완료, 60초 대기 중...")
+                # [분당 제한] 총 요청이 RPM * API키 개수를 초과하면 1분 대기
+                requests_per_minute = RPM_LIMIT * num_clients
+                if request_count > 0 and request_count % requests_per_minute == 0:
+                    status_box.write(f"⏳ RPM 제한 도달: {request_count}개 완료, 60초 대기 중...")
                     time.sleep(60)
 
                 future = executor.submit(safe_generate_image, current_client, prompt_text, fname, IMAGE_OUTPUT_DIR, SELECTED_IMAGE_MODEL)
