@@ -579,15 +579,16 @@ def generate_prompt(api_key, index, text_chunk, style_instruction, video_title, 
         return (scene_num, f"Error: {e}")
 
 # ==========================================
-# [수정됨] generate_image: API 제한(429) 완벽 대응 + 재시도 강화
+# [수정됨] generate_image: API 제한(429) 완벽 대응 + 점진적 재시도
 # ==========================================
 def generate_image(client, prompt, filename, output_dir, selected_model_name):
+    import random
     full_path = os.path.join(output_dir, filename)
-    
-    # [수정 1] 재시도 횟수를 10회로 늘려서 절대 포기하지 않게 함
-    max_retries = 10
-    
-    # [수정 2] 안전 필터 (기존 유지)
+
+    # 재시도 설정 (최대 5회, 대기 시간 점증)
+    max_retries = 5
+
+    # 안전 필터 설정
     safety_settings = [
         types.SafetySetting(
             category="HARM_CATEGORY_DANGEROUS_CONTENT",
@@ -614,10 +615,10 @@ def generate_image(client, prompt, filename, output_dir, selected_model_name):
                 contents=[prompt],
                 config=types.GenerateContentConfig(
                     image_config=types.ImageConfig(aspect_ratio="16:9"),
-                    safety_settings=safety_settings 
+                    safety_settings=safety_settings
                 )
             )
-            
+
             if response.parts:
                 for part in response.parts:
                     if part.inline_data:
@@ -625,39 +626,33 @@ def generate_image(client, prompt, filename, output_dir, selected_model_name):
                         image = Image.open(BytesIO(img_data))
                         image.save(full_path)
                         return full_path
-            
+
             # 응답은 왔으나 이미지가 없는 경우 (필터링 등)
             print(f"⚠️ [시도 {attempt}/{max_retries}] 이미지 데이터 없음. 재시도... ({filename})")
             time.sleep(2)
-            
+
         except Exception as e:
             error_msg = str(e)
-            # [상세 에러 로깅 추가]
-            print(f"=" * 50)
-            print(f"🔴 [에러 상세] {filename}")
-            print(f"   시도: {attempt}/{max_retries}")
-            print(f"   에러 타입: {type(e).__name__}")
-            print(f"   에러 메시지: {error_msg}")
-            print(f"=" * 50)
 
-            # [핵심 수정] 429 (Too Many Requests) 또는 429 Resource Exhausted 에러 발생 시
+            # [핵심 수정] 429 에러(속도 제한) 발생 시 점진적 대기 (Jitter 포함)
             if "429" in error_msg or "ResourceExhausted" in error_msg:
                 # [NEW] 일일 할당량(RPD) 소진 감지 - 재시도 불가
                 if "generate_requests_per_model_per_day" in error_msg or "daily" in error_msg.lower():
                     print(f"🚨 [일일 할당량 소진] {filename} - 오늘의 API 사용량이 모두 소진되었습니다.")
-                    # 특별한 에러 반환 (None 대신 문자열로 구분)
                     return "DAILY_LIMIT_EXHAUSTED"
 
-                wait_time = 30  # 30초 동안 멈췄다가 다시 시도 (분당 제한 초기화 대기)
-                print(f"🛑 [API 제한 감지] {filename} - {wait_time}초 대기 후 재시도합니다...")
+                # 시도 횟수가 늘어날수록 대기 시간 증가 (예: 5초 -> 10초 -> 15초...)
+                # 랜덤 시간을 섞어 스레드들이 동시에 재시도하는 것 방지 (Jitter)
+                wait_time = (5 * attempt) + random.uniform(1, 3)
+                print(f"🛑 [API 제한] {filename} - {wait_time:.1f}초 대기 후 재시도... (시도 {attempt})")
                 time.sleep(wait_time)
             elif "400" in error_msg or "InvalidArgument" in error_msg or "SAFETY" in error_msg.upper():
-                # 400 에러 또는 안전 필터 - 상세 로깅
+                # 400 에러 또는 안전 필터
                 print(f"🚫 [컨텐츠 거부] {filename} - 프롬프트가 거부됨. 5초 대기 후 재시도...")
                 time.sleep(5)
             else:
-                # 일반 에러는 5초 대기
-                print(f"⚠️ [기타 에러] {filename} - 5초 대기")
+                # 일반 에러는 짧게 대기
+                print(f"⚠️ [에러] {error_msg} ({filename}) - 5초 대기")
                 time.sleep(5)
             
     # [최종 실패]
@@ -1528,30 +1523,21 @@ if start_btn:
 
         prompts.sort(key=lambda x: x[0])
 
-        # 3. 이미지 생성 (멀티 API 병렬 처리)
+        # 3. 이미지 생성 (멀티 API 병렬 처리 - 최적화됨)
         num_clients = len(clients)
-        total_rate_limit = num_clients * 20  # 분당 최대 요청 수 (키당 20개)
 
         if num_clients > 1:
-            status_box.write(f"🎨 이미지 생성 중 ({SELECTED_IMAGE_MODEL}) - {num_clients}개 API 병렬 처리 (분당 최대 {total_rate_limit}개)")
+            status_box.write(f"🎨 이미지 생성 중 ({SELECTED_IMAGE_MODEL}) - {num_clients}개 API 병렬 처리")
         else:
-            status_box.write(f"🎨 이미지 생성 중 ({SELECTED_IMAGE_MODEL})... (API 보호를 위해 천천히 진행됩니다)")
+            status_box.write(f"🎨 이미지 생성 중 ({SELECTED_IMAGE_MODEL})...")
 
         results = []
 
-        # [RPM 기반 최적화] gemini-3-pro-image RPM = 20 (분당 20개)
-        # API 키당 3초 간격으로 요청해야 RPM 초과 방지
-        RPM_LIMIT = 20  # 분당 요청 제한
-        sleep_interval = 60.0 / RPM_LIMIT / num_clients  # API 키 개수로 나눔
-        # 최소 0.5초, 최대 3.5초 보장 (너무 빠르거나 느리지 않게)
-        sleep_interval = max(0.5, min(sleep_interval, 3.5))
+        # [최적화] 빠르게 요청 제출, 429 에러는 generate_image 내부에서 점진적 대기로 처리
+        # 사용자가 설정한 max_workers 그대로 사용
+        status_box.write(f"⚡ 병렬 처리 Worker: {max_workers}개")
 
-        # Worker 수: RPM에 맞춰 조절 (동시에 너무 많이 실행되지 않게)
-        adjusted_workers = min(max_workers, num_clients * 5)  # API 키당 5개 worker
-
-        status_box.write(f"⏱️ RPM 설정: {RPM_LIMIT}/분, 요청 간격: {sleep_interval:.1f}초, Worker: {adjusted_workers}개")
-
-        with ThreadPoolExecutor(max_workers=adjusted_workers) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_meta = {}
             request_count = 0
 
@@ -1563,18 +1549,9 @@ if start_btn:
                 # [라운드 로빈] 클라이언트 순환 배정
                 current_client = clients[request_count % num_clients]
 
-                # [RPM 기반 속도 조절] API 키 개수에 맞춰 대기
-                time.sleep(sleep_interval)
-
-                # [분당 제한] 총 요청이 RPM * API키 개수를 초과하면 1분 + 여유시간 대기
-                # 실제 API 처리 시간 고려하여 65~70초 대기 (5~10초 버퍼)
-                requests_per_minute = RPM_LIMIT * num_clients
-                if request_count > 0 and request_count % requests_per_minute == 0:
-                    import random
-                    buffer_time = random.randint(5, 10)  # 5~10초 랜덤 버퍼
-                    wait_time = 60 + buffer_time
-                    status_box.write(f"⏳ RPM 제한 도달: {request_count}개 완료, {wait_time}초 대기 중...")
-                    time.sleep(wait_time)
+                # [최적화] 0.1초 미세 지연만 (순서 꼬임 방지용)
+                # 속도 제한은 generate_image 함수 내부에서 점진적 대기로 처리
+                time.sleep(0.1)
 
                 future = executor.submit(safe_generate_image, current_client, prompt_text, fname, IMAGE_OUTPUT_DIR, SELECTED_IMAGE_MODEL)
                 future_to_meta[future] = (s_num, fname, orig_text, prompt_text)
