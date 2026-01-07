@@ -302,22 +302,22 @@ def parse_numbered_script(script):
     return scenes
 
 # ==========================================
-# [UPGRADE] 함수: AI 기반 대본 맥락 분할 (170~240자 범위, 28~40초)
+# [UPGRADE] 함수: 규칙 기반 대본 분할 (150~200자 범위, 25~33초)
 # ==========================================
 def split_text_automatically(client, full_text):
     """
     본문 전용 분할 - 규칙 기반 (AI 호출 없이 빠르게 처리)
-    - 1만자 기준 50~55개 씬 타겟 (평균 30초/185자)
-    - 최소 170자(28초) 확보 전 분할 엄격 금지
-    - 최대 240자(40초) 이전에 반드시 분할
+    - 1만자 기준 50~65개 씬 타겟 (평균 27초/165자)
+    - 최소 150자(25초) 확보 전 분할 엄격 금지
+    - 최대 200자(33초) 이전에 반드시 분할
     """
     # [최적화] AI 호출 없이 바로 규칙 기반 분할 사용 (5-10초 절약)
-    return split_script_by_time(full_text, min_chars=170, max_chars=240)
+    return split_script_by_time(full_text, min_chars=150, max_chars=200)
 
 
-# [UPGRADE] 규칙 기반 분할 함수 (170~240자 범위, 28~40초)
-def split_script_by_time(script, min_chars=170, max_chars=240):
-    """문장 단위로 합치되, 최소 170자가 넘을 때까지 무조건 다음 문장을 붙임"""
+# [UPGRADE] 규칙 기반 분할 함수 (150~200자 범위, 25~33초)
+def split_script_by_time(script, min_chars=150, max_chars=200):
+    """문장 단위로 합치되, 최소 150자가 넘을 때까지 무조건 다음 문장을 붙임"""
     sentences = re.split(r'(?<=[.?!])\s+', script.strip())
     chunks = []
     current_chunk = ""
@@ -328,17 +328,17 @@ def split_script_by_time(script, min_chars=170, max_chars=240):
 
         combined_length = len(current_chunk) + len(sentence) + 1
 
-        # 일단 최대치(240자)를 넘지 않으면 계속 합침
+        # 일단 최대치(200자)를 넘지 않으면 계속 합침
         if combined_length <= max_chars:
             current_chunk = (current_chunk + " " + sentence).strip() if current_chunk else sentence
         else:
-            # 합치면 240자를 넘는 경우
+            # 합치면 200자를 넘는 경우
             if len(current_chunk) >= min_chars:
-                # 이미 최소치(170자)를 확보했다면 여기서 자름
+                # 이미 최소치(150자)를 확보했다면 여기서 자름
                 chunks.append(current_chunk)
                 current_chunk = sentence
             else:
-                # 현재까지가 너무 짧으면(170자 미만) 어쩔 수 없이 이번 문장까지 합쳐서 자름 (약간 초과 허용)
+                # 현재까지가 너무 짧으면(150자 미만) 어쩔 수 없이 이번 문장까지 합쳐서 자름 (약간 초과 허용)
                 current_chunk = (current_chunk + " " + sentence).strip()
                 chunks.append(current_chunk)
                 current_chunk = ""
@@ -1160,90 +1160,6 @@ st.divider()
 st.title("🖼️ 씬별 이미지 생성")
 st.caption(f"번호(1. 2. 3.)로 분할된 대본을 넣으면 각 씬에 맞는 이미지를 생성합니다. | 🎨 Model: {SELECTED_IMAGE_MODEL}")
 
-st.subheader("📌 전체 영상 테마(제목) 설정")
-st.caption("이미지 생성 시 이 제목이 '전체적인 분위기 기준'이 됩니다.")
-
-if 'video_title' not in st.session_state:
-    st.session_state['video_title'] = ""
-if 'title_candidates' not in st.session_state:
-    st.session_state['title_candidates'] = []
-
-col_title_input, col_title_btn = st.columns([4, 1])
-
-# [수정됨] 버튼 로직: 제목 입력 기반으로 추천
-with col_title_btn:
-    st.write("")
-    st.write("")
-    if st.button("💡 제목 5개 추천", help="입력한 키워드를 바탕으로 제목을 추천합니다.", use_container_width=True):
-        current_user_title = st.session_state.get('video_title', "").strip()
-
-        if not api_key:
-            st.error("API Key 필요")
-        elif not current_user_title:
-            st.warning("⚠️ 먼저 '주제'를 입력해주세요.")
-        else:
-            client = genai.Client(api_key=api_key)
-            with st.spinner("AI가 최적의 제목을 고민 중입니다..."):
-                title_prompt = f"""
-                [Role] You are a YouTube viral marketing expert.
-                [Target Topic]
-                "{current_user_title}"
-                [Task]
-                Generate 5 click-bait YouTube video titles based on the Target Topic above.
-                사용자가 입력한거랑 최대한 비슷한 제목으로 추천, '몰락'이 들어간 경우 맨 뒤에 몰락으로 끝나게 한다.
-
-                [Output Format]
-                - Output ONLY the list of 5 titles.
-                - No numbering (1., 2.), just 5 lines of text.
-                - Language: Korean
-                """
-
-                try:
-                    resp = client.models.generate_content(
-                        model=GEMINI_TEXT_MODEL_NAME,
-                        contents=title_prompt
-                    )
-                    candidates = [line.strip() for line in resp.text.split('\n') if line.strip()]
-                    clean_candidates = []
-                    import re
-                    for c in candidates:
-                        clean = re.sub(r'^\d+\.\s*', '', c).replace('*', '').replace('"', '').strip()
-                        if clean: clean_candidates.append(clean)
-
-                    st.session_state['title_candidates'] = clean_candidates[:5]
-                except Exception as e:
-                    st.error(f"오류 발생: {e}")
-
-with col_title_input:
-    st.text_input(
-        "영상 제목 (직접 입력하거나 우측 버튼으로 추천받으세요)",
-        key="video_title", 
-        placeholder="제목 혹은 만들고 싶은 주제를 입력하세요 (예: 부자들의 습관)"
-    )
-
-if st.session_state['title_candidates']:
-    st.info("👇 AI가 추천한 제목입니다. 클릭하면 적용됩니다.")
-
-    def apply_title(new_title):
-        st.session_state['video_title'] = new_title
-        st.session_state['title_candidates'] = [] 
-
-    for idx, title in enumerate(st.session_state['title_candidates']):
-        col_c1, col_c2 = st.columns([4, 1])
-        with col_c1:
-            st.markdown(f"**{idx+1}. {title}**")
-        with col_c2:
-            st.button(
-                "✅ 선택", 
-                key=f"sel_title_{idx}", 
-                on_click=apply_title, 
-                args=(title,), 
-                use_container_width=True
-            )
-    
-    if st.button("❌ 목록 닫기"):
-        st.session_state['title_candidates'] = []
-
 if 'section_scripts' in st.session_state and st.session_state['section_scripts']:
     intro_text_acc = ""
     main_text_acc = ""
@@ -1294,12 +1210,12 @@ with col_input_opt:
     st.info("⏱️ 본문 씬 분할 설정 (고정)")
     st.markdown("""
     **자동 분할 기준:**
-    - 최소: **170자** (28초)
-    - 최대: **240자** (40초)
-    - 평균: **200자** (약 33초)
+    - 최소: **150자** (25초)
+    - 최대: **200자** (33초)
+    - 평균: **170자** (약 28초)
     """)
-    st.caption("📊 1만자 기준 약 50~55장 생성")
-    st.caption("🎯 목표: 도입부 10~13장 + 본문 50~55장 = 총 60~65장")
+    st.caption("📊 1만자 기준 약 50~65장 생성")
+    st.caption("🎯 목표: 도입부 10~13장 + 본문 50~65장 = 총 60~78장")
 
 with col_input_txt:
     script_input = st.text_area(
