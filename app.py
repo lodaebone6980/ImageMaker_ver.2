@@ -1461,6 +1461,10 @@ if start_btn:
         status_box = st.status("작업 진행 중...", expanded=True)
         progress_bar = st.progress(0)
 
+        # [NEW] 작업 시간 측정 시작
+        import time as time_module
+        start_time = time_module.time()
+
         # -------------------------------------------------------
         # [최적화] 미리보기로 분할된 씬이 있으면 재사용, 없으면 새로 분할
         # -------------------------------------------------------
@@ -1599,8 +1603,22 @@ if start_btn:
         
         results.sort(key=lambda x: x['scene'])
         st.session_state['generated_results'] = results
-        
-        status_box.update(label="✅ 완료되었습니다!", state="complete", expanded=False)
+
+        # [NEW] 작업 시간 측정 종료
+        end_time = time_module.time()
+        elapsed_time = end_time - start_time
+        minutes = int(elapsed_time // 60)
+        seconds = int(elapsed_time % 60)
+
+        # 성공/실패 카운트
+        success_count = sum(1 for r in results if r.get('path') and r['path'] != "DAILY_LIMIT_EXHAUSTED")
+        fail_count = len(results) - success_count
+
+        status_box.update(
+            label=f"✅ 완료! ⏱️ {minutes}분 {seconds}초 소요 | 성공: {success_count}장, 실패: {fail_count}장",
+            state="complete",
+            expanded=False
+        )
         st.session_state['is_processing'] = False
         
 # ==========================================
