@@ -258,22 +258,6 @@ def init_folders():
         if not os.path.exists(path):
             os.makedirs(path, exist_ok=True)
 
-def split_script_by_time(script, chars_per_chunk=100):
-    temp_sentences = script.replace(".", ".|").replace("?", "?|").replace("!", "!|").split("|")
-    chunks = []
-    current_chunk = ""
-    for sentence in temp_sentences:
-        sentence = sentence.strip()
-        if not sentence: continue
-        if len(current_chunk) + len(sentence) < chars_per_chunk:
-            current_chunk += " " + sentence
-        else:
-            chunks.append(current_chunk.strip())
-            current_chunk = sentence
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-    return chunks
-
 def parse_numbered_script(script):
     """
     번호(1. 2. 3.)로 분할된 대본을 파싱하여 씬 리스트로 반환.
@@ -1353,6 +1337,9 @@ if split_btn:
     elif not intro_input and not script_input:
         st.warning("⚠️ 도입부 또는 본문을 입력해주세요.")
     else:
+        # [NEW] 분할 시간 측정 시작
+        split_start_time = time.time()
+
         with st.spinner("🧠 AI가 대본을 분석하여 씬을 나누는 중..."):
             preview_client = genai.Client(api_key=api_key)
             all_scenes = []
@@ -1370,7 +1357,13 @@ if split_btn:
                 st.info(f"📝 본문: {len(main_scenes)}개 씬 (평균 30초)")
 
             st.session_state['split_scenes'] = all_scenes
-        st.success(f"✅ 총 {len(st.session_state['split_scenes'])}개 씬으로 분할되었습니다. (도입부 + 본문)")
+
+        # [NEW] 분할 시간 측정 종료
+        split_end_time = time.time()
+        split_elapsed = split_end_time - split_start_time
+        st.session_state['split_time'] = split_elapsed
+
+        st.success(f"✅ 총 {len(st.session_state['split_scenes'])}개 씬으로 분할 완료! ⏱️ {split_elapsed:.1f}초 소요")
 
 # [분할된 씬 표시] - 단일 드롭박스 안에 개별 박스로 표시 (이미지 생성 전에만 표시)
 if st.session_state.get('split_scenes') and not st.session_state.get('generated_results'):
@@ -1412,17 +1405,24 @@ if start_btn:
         status_box = st.status("작업 진행 중...", expanded=True)
         progress_bar = st.progress(0)
 
-        # [NEW] 작업 시간 측정 시작
+        # [NEW] 시간 측정용 변수들
         import time as time_module
-        start_time = time_module.time()
+        total_start_time = time_module.time()
+        split_time = 0.0
+        prompt_time = 0.0
+        image_time = 0.0
 
         # -------------------------------------------------------
         # [최적화] 미리보기로 분할된 씬이 있으면 재사용, 없으면 새로 분할
         # -------------------------------------------------------
+        split_start = time_module.time()
+
         if st.session_state.get('split_scenes') and len(st.session_state['split_scenes']) > 0:
             # 미리보기에서 이미 분할된 씬 사용
             chunks = st.session_state['split_scenes']
-            status_box.write(f"✅ 미리보기에서 분할된 {len(chunks)}개 씬 사용")
+            # 미리보기에서 측정된 시간 사용
+            split_time = st.session_state.get('split_time', 0.0)
+            status_box.write(f"✅ 미리보기에서 분할된 {len(chunks)}개 씬 사용 (⏱️ {split_time:.1f}초)")
         else:
             # 미리보기 없이 바로 시작한 경우 → 새로 분할
             chunks = []
@@ -1444,6 +1444,11 @@ if start_btn:
             # 분할된 씬을 session_state에 저장
             st.session_state['split_scenes'] = chunks
 
+            # 분할 시간 측정
+            split_time = time_module.time() - split_start
+            st.session_state['split_time'] = split_time
+            status_box.write(f"⏱️ 대본 분할: {split_time:.1f}초")
+
         total_scenes = len(chunks)
 
         if total_scenes == 0:
@@ -1462,6 +1467,7 @@ if start_btn:
         # -------------------------------------------------------
         # 2. 프롬프트 생성 (병렬) - 기존 로직 유지
         # -------------------------------------------------------
+        prompt_start = time_module.time()
         status_box.write(f"📝 씬별 프롬프트 작성 중 ({GEMINI_TEXT_MODEL_NAME})...")
         prompts = []
         with ThreadPoolExecutor(max_workers=10) as executor:
@@ -1483,8 +1489,11 @@ if start_btn:
                 progress_bar.progress((i + 1) / (total_scenes * 2))
 
         prompts.sort(key=lambda x: x[0])
+        prompt_time = time_module.time() - prompt_start
+        status_box.write(f"⏱️ 프롬프트 생성: {prompt_time:.1f}초")
 
         # 3. 이미지 생성 (멀티 API 병렬 처리 - 최적화됨)
+        image_start = time_module.time()
         num_clients = len(clients)
 
         if num_clients > 1:
@@ -1555,18 +1564,29 @@ if start_btn:
         results.sort(key=lambda x: x['scene'])
         st.session_state['generated_results'] = results
 
-        # [NEW] 작업 시간 측정 종료
-        end_time = time_module.time()
-        elapsed_time = end_time - start_time
-        minutes = int(elapsed_time // 60)
-        seconds = int(elapsed_time % 60)
+        # [NEW] 이미지 생성 시간 측정
+        image_time = time_module.time() - image_start
+        status_box.write(f"⏱️ 이미지 생성: {int(image_time // 60)}분 {int(image_time % 60)}초")
+
+        # [NEW] 전체 작업 시간 측정 종료
+        total_elapsed = time_module.time() - total_start_time
+        total_minutes = int(total_elapsed // 60)
+        total_seconds = int(total_elapsed % 60)
 
         # 성공/실패 카운트
         success_count = sum(1 for r in results if r.get('path') and r['path'] != "DAILY_LIMIT_EXHAUSTED")
         fail_count = len(results) - success_count
 
+        # 세션에 시간 정보 저장 (결과 화면에서 표시용)
+        st.session_state['time_info'] = {
+            'split': split_time,
+            'prompt': prompt_time,
+            'image': image_time,
+            'total': total_elapsed
+        }
+
         status_box.update(
-            label=f"✅ 완료! ⏱️ {minutes}분 {seconds}초 소요 | 성공: {success_count}장, 실패: {fail_count}장",
+            label=f"✅ 완료! ⏱️ 총 {total_minutes}분 {total_seconds}초 | 성공: {success_count}장, 실패: {fail_count}장",
             state="complete",
             expanded=False
         )
@@ -1591,7 +1611,24 @@ if st.session_state['generated_results']:
         st.divider()
 
     st.header(f"📸 결과물 ({len(st.session_state['generated_results'])}장)")
-    
+
+    # [NEW] 소요 시간 상세 표시
+    if st.session_state.get('time_info'):
+        ti = st.session_state['time_info']
+        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+        with col_t1:
+            st.metric("📜 대본 분할", f"{ti['split']:.1f}초")
+        with col_t2:
+            st.metric("📝 프롬프트 생성", f"{ti['prompt']:.1f}초")
+        with col_t3:
+            img_min = int(ti['image'] // 60)
+            img_sec = int(ti['image'] % 60)
+            st.metric("🎨 이미지 생성", f"{img_min}분 {img_sec}초")
+        with col_t4:
+            total_min = int(ti['total'] // 60)
+            total_sec = int(ti['total'] % 60)
+            st.metric("⏱️ 총 소요 시간", f"{total_min}분 {total_sec}초")
+
     # ------------------------------------------------
     # 1. 일괄 작업 버튼 영역
     # ------------------------------------------------
